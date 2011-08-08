@@ -78,7 +78,8 @@ EVENT_TYPE = Enum2(
           INFO="INFO",
           NOTICE="NOTICE",
           WARN="WARN",
-          ERR="ERR")
+          ERR="ERR",
+          CONF_CHANGED="CONF_CHANGED")
 
 EVENT_STATE = Enum2(
           PRISTINE="PRISTINE",
@@ -250,6 +251,11 @@ class BWEvent(Event):
     Event.__init__(self, event_name, body)
     self.read = read
     self.written = written
+
+class ConfChangedEvent(Event):
+  def __init__(self, event_name, options, body):
+    Event.__init__(self, event_name, body)
+    self.options = options
 
 class UnknownEvent(Event):
   def __init__(self, event_name, event_string):
@@ -1243,6 +1249,7 @@ class EventSink:
   def guard_event(self, event): pass
   def address_mapped_event(self, event): pass
   def timer_event(self, event): pass
+  def conf_changed_event(self, event): pass
 
 class EventListener(EventSink):
   """An 'EventListener' is a passive sink for parsed Tor events. It 
@@ -1272,7 +1279,8 @@ class EventListener(EventSink):
       "NEWCONSENSUS" : self.new_consensus_event,
       "BUILDTIMEOUT_SET" : self.buildtimeout_set_event,
       "GUARD" : self.guard_event,
-      "TORCTL_TIMER" : self.timer_event
+      "TORCTL_TIMER" : self.timer_event,
+      "CONF_CHANGED" : self.conf_changed_event,
       }
     self.parent_handler = None
     self._sabotage()
@@ -1325,6 +1333,15 @@ class EventHandler(EventSink):
 
   def _handle1(self, timestamp, lines):
     """Dispatcher: called from Connection when an event is received."""
+    if len(lines) > 1:
+      codes = [line[0] for line in lines]
+      msgs = [line[1] for line in lines]
+      datas = [line[2] for line in lines]
+      if len(set(codes)) == 1 and msgs[-1] == "OK":
+        # all lines contained the same code and the last line contains OK
+        code = codes[0]
+        msg = "%s %s" % (msgs[0], "\r\n".join(msgs[1:-1]))
+        lines = [(code, msg, datas)]
     for code, msg, data in lines:
       event = self._decode1(msg, data)
       event.arrived_at = timestamp
@@ -1429,6 +1446,16 @@ class EventHandler(EventSink):
         raise ProtocolError("BANDWIDTH event misformatted.")
       read, written = map(long, m.groups())
       event = BWEvent(evtype, read, written, body)
+    elif evtype == "CONF_CHANGED":
+      lines = body.split("\r\n")
+      options = {}
+      for line in lines:
+        if "=" in line:
+          key, value = line.split("=", 1)
+          options[key] = value
+        else:
+          options[line] = None
+      event = ConfChangedEvent(evtype, options, body)
     elif evtype in ("DEBUG", "INFO", "NOTICE", "WARN", "ERR"):
       event = LogEvent(evtype, body)
     elif evtype == "NEWDESC":
